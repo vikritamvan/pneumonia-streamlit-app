@@ -1,166 +1,166 @@
 import streamlit as st
 import tensorflow as tf
 from tensorflow import keras
-from PIL import Image # Untuk membuka dan memproses gambar
+from PIL import Image # For opening and processing images
 import numpy as np
-import os # Untuk memeriksa keberadaan file model
+import os # For checking file existence
 
-# --- Konfigurasi Halaman Streamlit ---
+# --- Streamlit Page Configuration ---
 st.set_page_config(
-    page_title="Aplikasi Prediksi Pneumonia", # Judul yang muncul di tab browser
-    page_icon="🩺", # Ikon di tab browser
-    layout="centered", # Tata letak konten utama: "centered" atau "wide"
-    initial_sidebar_state="auto" # Status sidebar saat pertama kali dibuka
+    page_title="Pneumonia Prediction App", # Title appearing in the browser tab
+    page_icon="🩺", # Icon in the browser tab
+    layout="centered", # Main content layout: "centered" or "wide"
+    initial_sidebar_state="auto" # Sidebar initial state
 )
 
-# --- Fungsi untuk Memuat Model (dengan caching) ---
-# Menggunakan st.cache_resource untuk memuat model hanya sekali
-# Ini penting karena model besar tidak perlu dimuat ulang setiap kali ada interaksi UI
+# --- Function to Load Model (with caching) ---
+# Using st.cache_resource to load the model only once
+# This is important because large models don't need to be reloaded on every UI interaction
 @st.cache_resource
 def load_pneumonia_model():
-    model_path = "pneumonia_detection_model.keras" # Nama file model Anda
+    model_path = "pneumonia_detection_model.keras" # Your model file name
     
     if not os.path.exists(model_path):
-        st.error(f"File model tidak ditemukan: {model_path}. Pastikan model berada di direktori yang sama dengan 'app.py'.")
-        st.stop() # Hentikan aplikasi jika model tidak ditemukan
+        st.error(f"Model file not found: {model_path}. Please ensure the model is in the same directory as 'app.py'.")
+        st.stop() # Stop the application if the model is not found
 
-    # Memuat model Keras. custom_objects diperlukan untuk metrik F1Score
+    # Load Keras model. custom_objects is required for F1Score metric
     try:
         model = keras.models.load_model(
             model_path,
-            # Pastikan definisi F1Score di Python sama persis dengan yang digunakan saat training
+            # Ensure the F1Score definition in Python is exactly the same as used during training
             custom_objects={'f1_score': keras.metrics.F1Score(threshold=0.5)}
         )
         return model
     except Exception as e:
-        st.error(f"Gagal memuat model: {e}")
-        st.stop() # Hentikan aplikasi jika model gagal dimuat
+        st.error(f"Failed to load model: {e}")
+        st.stop() # Stop the application if the model fails to load
 
-# Muat model saat aplikasi dimulai (ini akan dilakukan hanya sekali berkat @st.cache_resource)
+# Load the model when the application starts (this will happen only once thanks to @st.cache_resource)
 model = load_pneumonia_model()
 
-# --- Fungsi Pra-pemrosesan Gambar ---
-# Fungsi ini harus meniru pra-pemrosesan yang Anda lakukan di Python sebelum training.
-# Lapisan augmentasi TIDAK PERLU diterapkan saat prediksi.
-# Hanya lapisan Rescaling (jika ada) dan konversi format yang perlu.
+# --- Image Preprocessing Function ---
+# This function must mimic the preprocessing you performed in Python before training.
+# Augmentation layers are NOT NECESSARY to apply during prediction.
+# Only Rescaling (if any) and format conversion are needed.
 def preprocess_image(image_file, target_size=(224, 224)):
-    # Buka gambar menggunakan PIL (Pillow)
+    # Open the image using PIL (Pillow)
     img = Image.open(image_file)
     
-    # Konversi ke grayscale jika bukan (X-ray seringkali grayscale)
-    # Jika mode adalah 'L' (grayscale) atau 'LA' (grayscale + alpha), biarkan.
-    # Jika RGB/RGBA, konversi ke grayscale dulu.
+    # Convert to grayscale if not already (X-rays are often grayscale)
+    # If mode is 'L' (grayscale) or 'LA' (grayscale + alpha), leave it.
+    # If RGB/RGBA, convert to grayscale first.
     if img.mode not in ('L', 'LA'):
         img = img.convert('L') # Convert to grayscale
 
-    # Ubah ukuran gambar menggunakan algoritma Lanczos untuk kualitas tinggi
+    # Resize the image using Lanczos algorithm for high quality
     img = img.resize(target_size, Image.Resampling.LANCZOS)
 
-    # Konversi gambar PIL ke array NumPy dengan tipe data float32
+    # Convert PIL image to a NumPy array with float32 data type
     img_array = np.array(img, dtype=np.float32)
 
-    # Jika gambar memiliki 1 channel (grayscale), duplikasi menjadi 3 channel (RGB)
-    # Model Anda mengharapkan input (224, 224, 3)
-    if img_array.ndim == 2: # Jika array hanya (height, width)
-        img_array = np.stack([img_array, img_array, img_array], axis=-1) # Menjadi (height, width, 3)
-    elif img_array.shape[-1] == 4: # Jika ada alpha channel (RGBA), buang alpha
+    # If the image has 1 channel (grayscale), duplicate it to 3 channels (RGB)
+    # Your model expects input (224, 224, 3)
+    if img_array.ndim == 2: # If the array is only (height, width)
+        img_array = np.stack([img_array, img_array, img_array], axis=-1) # Becomes (height, width, 3)
+    elif img_array.shape[-1] == 4: # If there's an alpha channel (RGBA), discard alpha
         img_array = img_array[:, :, :3]
     
-    # Normalisasi: Model Anda memiliki Rescaling(1./127.5, offset=-1) sebagai layer pertama setelah input.
-    # Ini berarti gambar input diharapkan dalam rentang [0, 255] dan model akan menormalisasinya sendiri.
-    # Jadi, kita tidak perlu normalisasi manual di sini jika img_array sudah di [0, 255].
-    # PIL Image.open() dan np.array() akan menghasilkan nilai 0-255 untuk gambar standar.
+    # Normalization: Your model has Rescaling(1./127.5, offset=-1) as the first layer after input.
+    # This means the input image is expected to be in the range [0, 255] and the model will normalize it itself.
+    # So, we don't need manual normalization here if img_array is already in [0, 255].
+    # PIL Image.open() and np.array() will produce 0-255 values for standard images.
 
-    # Tambahkan dimensi batch (untuk satu gambar)
-    img_array = np.expand_dims(img_array, axis=0) # Menjadi (1, height, width, channels)
+    # Add batch dimension (for a single image)
+    img_array = np.expand_dims(img_array, axis=0) # Becomes (1, height, width, channels)
 
     return img_array
 
-# --- Sidebar untuk Navigasi Halaman ---
-st.sidebar.title("Navigasi")
-# Membuat radio button di sidebar untuk memilih halaman
-page = st.sidebar.radio("Pilih Halaman", ["Beranda", "Prediksi"])
+# --- Sidebar for Page Navigation ---
+st.sidebar.title("Navigation")
+# Create radio buttons in the sidebar to select pages
+page = st.sidebar.radio("Select Page", ["Home", "Prediction"])
 
-# --- Konten Halaman Berdasarkan Pilihan di Sidebar ---
+# --- Page Content Based on Sidebar Selection ---
 
-if page == "Beranda":
-    # Menggunakan HTML mentah untuk mengatur judul utama ke tengah
-    st.markdown(f'<div style="text-align: center;"><h1><b>Sistem Prediksi Pneumonia dari Citra X-Ray</b></h1></div>', unsafe_allow_html=True)
+if page == "Home":
+    # Using raw HTML to center the main title
+    st.markdown(f'<div style="text-align: center;"><h1><b>Pneumonia Prediction System from X-Ray Images</b></h1></div>', unsafe_allow_html=True)
     
-    # Judul Inventor dengan garis bawah dan di tengah
-    st.markdown("<h3 style='text-align: center;'><u>Inventor :</u></h3>", unsafe_allow_html=True)
+    # Inventor Title with underline and centered
+    st.markdown("<h3 style='text-align: center;'><u>Inventors :</u></h3>", unsafe_allow_html=True)
     
-    # Daftar Inventor tanpa bullet points, di tengah
+    # List of Inventors without bullet points, centered
     st.markdown("<p style='text-align: center;'>Puspita Kartikasari, S.Si., M.Si.</p>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Prof. Dr. Rukun Santoso, M.Si.</p>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Dra. Suparti, M.Si.</p>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Rizwan Arisandi, S.Si., M.Si.</p>", unsafe_allow_html=True)
     st.markdown("<p style='text-align: center;'>Vikri Haikal</p>", unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True) # Baris kosong untuk pemisah
+    st.markdown("<br>", unsafe_allow_html=True) # Empty line for separation
     
-    # Detail Universitas dan Tahun, di tengah
-    st.markdown("<h3 style='text-align: center;'>DEPARTEMEN STATISTIKA</h3>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>FAKULTAS SAINS DAN MATEMATIKA</h3>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>UNIVERSITAS DIPONEGORO</h3>", unsafe_allow_html=True)
-    st.markdown("<h3 style='text-align: center;'>TAHUN 2025</h3>", unsafe_allow_html=True)
+    # University and Year Details, centered
+    st.markdown("<h3 style='text-align: center;'>DEPARTMENT OF STATISTICS</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>FACULTY OF SCIENCE AND MATHEMATICS</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>DIPONEGORO UNIVERSITY</h3>", unsafe_allow_html=True)
+    st.markdown("<h3 style='text-align: center;'>YEAR 2025</h3>", unsafe_allow_html=True)
 
-    st.markdown("<br>", unsafe_allow_html=True) # Baris kosong
+    st.markdown("<br>", unsafe_allow_html=True) # Empty line
     
-    # Deskripsi aplikasi
-    st.write("Aplikasi ini menggunakan model Deep Learning yang dilatih dengan teknik Transfer Learning untuk memprediksi apakah citra X-Ray paru-paru menunjukkan tanda-tanda Pneumonia atau Normal.")
-    st.write("Navigasikan ke halaman 'Prediksi' di sidebar untuk mengunggah gambar dan mendapatkan hasilnya.")
+    # Application description
+    st.write("This application uses a Deep Learning model trained with Transfer Learning techniques to predict whether a lung X-ray image shows signs of Pneumonia or is Normal.")
+    st.write("Navigate to the 'Prediction' page in the sidebar to upload an image and get the results.")
 
-elif page == "Prediksi":
-    st.title("Prediksi Pneumonia")
+elif page == "Prediction":
+    st.title("Pneumonia Prediction")
 
-    st.write("Unggah gambar X-Ray paru-paru (format JPG/PNG) untuk mendapatkan prediksi.")
-    # Widget untuk mengunggah file
-    uploaded_file = st.file_uploader("Unggah Gambar X-Ray Paru-paru", type=["jpg", "jpeg", "png"])
+    st.write("Upload a lung X-ray image (JPG/PNG format) to get a prediction.")
+    # Widget for uploading files
+    uploaded_file = st.file_uploader("Upload Lung X-Ray Image", type=["jpg", "jpeg", "png"])
 
-    # Hanya tampilkan bagian ini jika ada file yang diunggah
+    # Only display this section if a file is uploaded
     if uploaded_file is not None:
-        st.subheader("Gambar yang Diunggah:")
-        # Menampilkan gambar yang diunggah
-        st.image(uploaded_file, caption='Gambar X-Ray Anda', use_column_width=True)
+        st.subheader("Uploaded Image:")
+        # Display the uploaded image
+        st.image(uploaded_file, caption='Your X-Ray Image', use_column_width=True)
 
-        # Tombol untuk memicu prediksi
-        if st.button("Lakukan Prediksi"):
-            # Menampilkan spinner loading
-            with st.spinner("Melakukan prediksi..."):
+        # Button to trigger prediction
+        if st.button("Perform Prediction"):
+            # Display loading spinner
+            with st.spinner("Performing prediction..."):
                 try:
-                    # Pra-pemrosesan gambar
+                    # Preprocess the image
                     img_for_pred = preprocess_image(uploaded_file)
                     
-                    # Melakukan prediksi menggunakan model
-                    # Output dari model.predict() adalah array, ambil nilai skalarnya
+                    # Perform prediction using the model
+                    # The output of model.predict() is an array, get its scalar value
                     prediction = model.predict(img_for_pred)[0][0] 
                     
-                    # Interpretasi hasil prediksi
-                    probability_pneumonia = float(prediction) # Pastikan tipe data float
+                    # Interpret prediction results
+                    probability_pneumonia = float(prediction) # Ensure float data type
                     
-                    threshold = 0.5 # Threshold untuk klasifikasi
+                    threshold = 0.5 # Threshold for classification
 
-                    st.subheader("Hasil Prediksi:")
-                    st.write(f"Probabilitas Pneumonia: {probability_pneumonia * 100:.2f}%")
+                    st.subheader("Prediction Results:")
+                    st.write(f"Probability of Pneumonia: {probability_pneumonia * 100:.2f}%")
 
-                    st.subheader("Interpretasi:")
+                    st.subheader("Interpretation:")
                     if probability_pneumonia >= threshold:
-                        # Teks interpretasi dengan warna merah untuk Pneumonia
+                        # Interpretation text with red color for Pneumonia
                         st.markdown(
                             f"<p style='color:red;'><b>Pneumonia</b></p>"
-                            f"Model mengidentifikasi adanya kemungkinan pneumonia dengan probabilitas "
+                            f"The model identifies the possibility of pneumonia with a probability of "
                             f"{probability_pneumonia * 100:.2f}%.",
                             unsafe_allow_html=True
                         )
                     else:
-                        # Teks interpretasi dengan warna hijau untuk Normal
+                        # Interpretation text with green color for Normal
                         st.markdown(
                             f"<p style='color:green;'><b>Normal</b></p>"
-                            f"Model tidak mengidentifikasi adanya tanda-tanda pneumonia (probabilitas pneumonia "
+                            f"The model does not identify signs of pneumonia (pneumonia probability "
                             f"{probability_pneumonia * 100:.2f}%).",
                             unsafe_allow_html=True
                         )
                 except Exception as e:
-                    # Menangkap dan menampilkan error jika terjadi selama prediksi
-                    st.error(f"Terjadi kesalahan saat melakukan prediksi: {e}")
+                    # Catch and display error if it occurs during prediction
+                    st.error(f"An error occurred during prediction: {e}")
